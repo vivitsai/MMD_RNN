@@ -1,0 +1,639 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[1]:
+
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import warnings
+warnings.filterwarnings("ignore")
+
+
+# In[6]:
+
+
+B_goods = pd.read_csv('B_goods.csv',encoding='utf-8')
+B_order_info = pd.read_csv('B_order_info.csv',encoding='utf-8')
+B_order_goods = pd.read_csv('B_order_goods.csv',encoding='utf-8')
+B_comment = pd.read_csv('B_comment.csv',encoding='utf-8')
+
+
+# 处理时间，转为年-月-日 时：分：秒
+
+# In[7]:
+
+
+B_order_info = B_order_info.sort_values('add_time(下单时间)')
+B_comment = B_comment.sort_values('add_time(评论时间时间戳)')
+B_order_info['add_time(下单时间)'] = pd.to_datetime(B_order_info['add_time(下单时间)'],unit='s')
+B_order_info['pay_time(支付时间)'] = pd.to_datetime(B_order_info['pay_time(支付时间)'],unit='s')
+B_order_info['shipping_time(发货时间)'] = pd.to_datetime(B_order_info['shipping_time(发货时间)'],unit='s')
+B_order_info['pay_time-add_time'] = (B_order_info['pay_time(支付时间)']-B_order_info['add_time(下单时间)']).dt.total_seconds()
+B_order_info['shipping_tim-pay_time'] = (B_order_info['shipping_time(发货时间)']-B_order_info['pay_time(支付时间)']).dt.total_seconds()
+B_order_info['pay_time(支付时间)'] = B_order_info['pay_time(支付时间)'].dt.date
+B_order_info['add_time(下单时间)'] = B_order_info['add_time(下单时间)'].dt.date
+B_order_info['shipping_time(发货时间)'] = B_order_info['shipping_time(发货时间)'].dt.date
+B_comment['add_time(评论时间时间戳)'] = pd.to_datetime(B_comment['add_time(评论时间时间戳)'],unit='s').dt.date
+
+
+# 从B_order_info中获取每一个订单的时间拼接到B_order_goods中
+
+# In[8]:
+
+
+temp = B_order_info[['order_id(订单id)','add_time(下单时间)']]
+temp.columns = ['order_id(订单号)','订单时间']
+B_order_goods = B_order_goods.merge(temp,on='order_id(订单号)',how='left')
+
+
+# # 构造要预测目标数据
+
+# In[9]:
+
+
+#计算每一个商品的销量
+df = B_order_goods.groupby(['goods_id(商品ID)','订单时间'])['number(订购数量)'].agg([('number(订购数量) 日销量',sum)]).reset_index()
+df['订单时间'] = pd.to_datetime(df['订单时间'])
+
+
+# 缺失日期填充：商品1的订单记录在2020-06-01，2020-06-20，。。。，这样01到20之间没有记录，销量为0这个需要填充上
+
+# In[10]:
+
+
+#缺失日期填充
+data = pd.DataFrame()
+for group in df.groupby(['goods_id(商品ID)']):
+    group = group[1].resample('1 D',on='订单时间').first()
+    group = group.drop(['订单时间'],axis=1).reset_index()
+    group['goods_id(商品ID)'] = group['goods_id(商品ID)'].fillna(group['goods_id(商品ID)'].mode()[0]).astype(int)
+    group['number(订购数量) 日销量'] = group['number(订购数量) 日销量'].fillna(0)
+    data = pd.concat([data,group])
+
+
+# 这个这个商品这个时间节点未来7天的销量和
+
+# In[11]:
+
+
+data['number(订购数量) 未来7日销量'] = np.sum([data.groupby(['goods_id(商品ID)'])['number(订购数量) 日销量'].shift(-i) for i in range(1,8)],axis=0)
+
+
+# In[12]:
+
+
+data['订单时间'] = data['订单时间'].dt.date
+
+
+# In[13]:
+
+
+data.head()
+
+
+# # 特征工程-B_order_info
+
+# province(省)	city(市)	district(区/县)这几个特征的类很多不能使用one-hot处理，神经网络也没办法处理label的，所以采取embedding的方式，这里使用的是gensim的doc2vec，它和word2vec类似
+
+# In[14]:
+
+
+import gensim
+
+
+# In[15]:
+
+
+area_col,vec_num = 'province(省)',2
+#获取order_info中每一个订单的省份
+temp = B_order_info[['order_id(订单id)',area_col]]
+temp.columns = ['order_id(订单号)',area_col]
+B_order_goods = B_order_goods.merge(temp,on='order_id(订单号)',how='left') #拼接到order_goods中
+#获取每一个商品每一天的省份
+goods_date_area = B_order_goods.groupby(['goods_id(商品ID)','订单时间'])[area_col].apply(lambda x: 
+                                                                         list(x.dropna().astype(int).astype(str))).reset_index()
+#doc2vec向量化
+corpus = []
+for i, line in enumerate(goods_date_area[area_col]):
+    corpus.append(gensim.models.doc2vec.TaggedDocument(line,[i]))
+#50维，最小两个词
+model = gensim.models.doc2vec.Doc2Vec(vector_size=vec_num, min_count=1, epochs=100)
+model.build_vocab(corpus)
+doc2vec = goods_date_area[area_col].map(lambda x:model.infer_vector(x))
+doc2vec = pd.DataFrame(doc2vec.values.tolist())
+doc2vec.columns = [area_col+'_'+str(i) for i in range(vec_num)]
+#拼接到data中
+goods_date_area = pd.concat([goods_date_area,doc2vec],axis=1)
+goods_date_area['订单时间'] = goods_date_area['订单时间'].dt.date
+print(goods_date_area.head())
+del goods_date_area[area_col]
+data = data.merge(goods_date_area,on=['goods_id(商品ID)','订单时间'],how='left')
+
+
+# In[ ]:
+
+
+area_col,vec_num = 'city(市)',3
+#获取order_info中每一个订单的省份
+temp = B_order_info[['order_id(订单id)',area_col]]
+temp.columns = ['order_id(订单号)',area_col]
+B_order_goods = B_order_goods.merge(temp,on='order_id(订单号)',how='left') #拼接到order_goods中
+#获取每一个商品每一天的省份
+goods_date_area = B_order_goods.groupby(['goods_id(商品ID)','订单时间'])[area_col].apply(lambda x: 
+                                                                         list(x.dropna().astype(int).astype(str))).reset_index()
+#doc2vec向量化
+corpus = []
+for i, line in enumerate(goods_date_area[area_col]):
+    corpus.append(gensim.models.doc2vec.TaggedDocument(line,[i]))
+#50维，最小两个词
+model = gensim.models.doc2vec.Doc2Vec(vector_size=vec_num, min_count=1, epochs=100)
+model.build_vocab(corpus)
+doc2vec = goods_date_area[area_col].map(lambda x:model.infer_vector(x))
+doc2vec = pd.DataFrame(doc2vec.values.tolist())
+doc2vec.columns = [area_col+'_'+str(i) for i in range(vec_num)]
+#拼接到data中
+goods_date_area = pd.concat([goods_date_area,doc2vec],axis=1)
+goods_date_area['订单时间'] = goods_date_area['订单时间'].dt.date
+print(goods_date_area.head())
+del goods_date_area[area_col]
+data = data.merge(goods_date_area,on=['goods_id(商品ID)','订单时间'],how='left')
+
+
+# In[ ]:
+
+
+area_col,vec_num = 'district(区/县)',4
+#获取order_info中每一个订单的省份
+temp = B_order_info[['order_id(订单id)',area_col]]
+temp.columns = ['order_id(订单号)',area_col]
+B_order_goods = B_order_goods.merge(temp,on='order_id(订单号)',how='left') #拼接到order_goods中
+#获取每一个商品每一天的省份
+goods_date_area = B_order_goods.groupby(['goods_id(商品ID)','订单时间'])[area_col].apply(lambda x: 
+                                                                         list(x.dropna().astype(int).astype(str))).reset_index()
+#doc2vec向量化
+corpus = []
+for i, line in enumerate(goods_date_area[area_col]):
+    corpus.append(gensim.models.doc2vec.TaggedDocument(line,[i]))
+#50维，最小两个词
+model = gensim.models.doc2vec.Doc2Vec(vector_size=vec_num, min_count=1, epochs=100)
+model.build_vocab(corpus)
+doc2vec = goods_date_area[area_col].map(lambda x:model.infer_vector(x))
+doc2vec = pd.DataFrame(doc2vec.values.tolist())
+doc2vec.columns = [area_col+'_'+str(i) for i in range(vec_num)]
+#拼接到data中
+goods_date_area = pd.concat([goods_date_area,doc2vec],axis=1)
+goods_date_area['订单时间'] = goods_date_area['订单时间'].dt.date
+print(goods_date_area.head())
+del goods_date_area[area_col]
+data = data.merge(goods_date_area,on=['goods_id(商品ID)','订单时间'],how='left')
+
+
+# 没有销量的日期填充为0
+
+# In[ ]:
+
+
+for col in ['province(省)_0', 'province(省)_1', 'district(区/县)_0', 'district(区/县)_1',
+       'district(区/县)_2', 'district(区/县)_3', 'city(市)_0', 'city(市)_1','city(市)_2']:
+    data[col] = data[col].fillna(0)
+
+
+# ### 快递特征
+
+# 先对快递特征进行替换，属于同一个快递的合并
+
+# In[ ]:
+
+
+shipping_replace = {'中通速递[全场默认此快递]':'中通速递',
+                    '顺丰速运[部分顺丰包邮产品适用]':'顺丰速运',
+                   '韵达快运':'韵达速递',
+                    'EMS快递':'邮政包裹',
+                    '邮政快递包裹':'邮政包裹',
+                   '汇通快运':'汇通快递'}
+shipping_replace_keys = shipping_replace.keys()
+def get_shipping_replace(x):
+    if x in shipping_replace_keys:
+        return shipping_replace[x]
+    else:
+        return x
+
+
+# In[ ]:
+
+
+B_order_info['shipping_id(快递名称)'] = B_order_info['shipping_id(快递名称)'].map(lambda x:get_shipping_replace(x))
+
+
+# 这里计算的是每一天每一种快递的数量
+
+# In[ ]:
+
+
+temp = B_order_info[['order_id(订单id)','shipping_id(快递名称)']]
+temp.columns = ['order_id(订单号)','shipping_id(快递名称)']
+B_order_goods = B_order_goods.merge(temp,on='order_id(订单号)',how='left') #拼接到order_goods中
+
+
+# In[ ]:
+
+
+temp = B_order_goods[['goods_id(商品ID)','订单时间','shipping_id(快递名称)']]
+temp = pd.get_dummies(temp,columns=['shipping_id(快递名称)'])
+temp = temp.groupby(['goods_id(商品ID)','订单时间']).sum().reset_index()
+temp.head()
+
+
+# In[ ]:
+
+
+data = data.merge(temp,on=['goods_id(商品ID)','订单时间'],how='left')
+
+
+# 缺失的填充为0
+
+# In[ ]:
+
+
+for col in ['shipping_id(快递名称)_中通速递', 'shipping_id(快递名称)_国通快递', 'shipping_id(快递名称)_圆通速递',
+       'shipping_id(快递名称)_天天', 'shipping_id(快递名称)_汇通快递','shipping_id(快递名称)_申通快递', 'shipping_id(快递名称)_邮政包裹',
+       'shipping_id(快递名称)_韵达速递', 'shipping_id(快递名称)_顺丰速运']:
+    data[col] = data[col].fillna(0)
+
+
+# ### pay_name(支付方式)特征
+
+# 支付方式合并为三种
+
+# In[ ]:
+
+
+def get_pay_name(x):
+    if '网银' in x:
+        return '网银支付'
+    elif '微信' in x:
+        return '微信支付'
+    else:
+        return '支付宝'
+
+
+# In[ ]:
+
+
+B_order_info['pay_name(支付方式)'] = B_order_info['pay_name(支付方式)'].astype(str).map(lambda x:get_pay_name(x))
+
+
+# 计算每一天每一种支付方式的数量
+
+# In[ ]:
+
+
+temp = B_order_info[['order_id(订单id)','pay_name(支付方式)']]
+temp.columns = ['order_id(订单号)','pay_name(支付方式)']
+B_order_goods = B_order_goods.merge(temp,on='order_id(订单号)',how='left') #拼接到order_goods中
+temp = B_order_goods[['goods_id(商品ID)','订单时间','pay_name(支付方式)']]
+temp = pd.get_dummies(temp,columns=['pay_name(支付方式)'])
+temp = temp.groupby(['goods_id(商品ID)','订单时间']).sum().reset_index()
+temp.head()
+
+
+# In[ ]:
+
+
+data = data.merge(temp,on=['goods_id(商品ID)','订单时间'],how='left')
+
+
+# In[ ]:
+
+
+for col in ['pay_name(支付方式)_微信支付', 'pay_name(支付方式)_支付宝','pay_name(支付方式)_网银支付']:
+    data[col] = data[col].fillna(0)
+
+
+# ### 是否类特征
+
+# 每一天每一种是否类的数量
+
+# In[ ]:
+
+
+for col in ['shipping_fee(邮费)','integral_money(积分抵扣金额)','bonus(优惠券金额)','from_ad(广告位ID)',
+            'discount(打折)','bonus_id(优惠券ID)']:
+    B_order_info[col] = B_order_info[col].map(lambda x: 1 if x>0 else 0)
+    temp = B_order_info[['order_id(订单id)',col]]
+    temp.columns = ['order_id(订单号)',col]
+    B_order_goods = B_order_goods.merge(temp,on='order_id(订单号)',how='left') #拼接到order_goods中
+    temp = B_order_goods.groupby(['goods_id(商品ID)','订单时间'])[col].sum().reset_index()
+    print(temp.head())
+    data = data.merge(temp,on=['goods_id(商品ID)','订单时间'],how='left')
+    data[col] = data[col].fillna(0)
+
+
+# ### 计算分布的特征
+
+# 计算每一天分布的均值，和，方差作为特征
+
+# In[ ]:
+
+
+for col in ['pay_time-add_time', 'shipping_tim-pay_time','goods_amount(订单总金额)','money_paid(实付金额)']:
+    temp = B_order_info[['order_id(订单id)',col]]
+    temp.columns = ['order_id(订单号)',col]
+    temp = temp[temp[col]>=0]
+    B_order_goods = B_order_goods.merge(temp,on='order_id(订单号)',how='left') #拼接到order_goods中
+    temp = B_order_goods.groupby(['goods_id(商品ID)','订单时间'])[col].agg([(col+'_mean','mean'),
+                                                                     (col+'_sum','sum'),
+                                                                     (col+'_var','var')]).reset_index()
+    print(temp.head())
+    data = data.merge(temp,on=['goods_id(商品ID)','订单时间'],how='left')
+    data[col+'_mean'] = data[col+'_mean'].fillna(0)
+    data[col+'_sum'] = data[col+'_sum'].fillna(0)
+    data[col+'_var'] = data[col+'_var'].fillna(0)
+
+
+# 'market_price(市场价格)','goods_price(售价)'
+
+# In[ ]:
+
+
+data = data.merge(B_order_goods[['goods_id(商品ID)','订单时间','market_price(市场价格)','goods_price(售价)']],
+                  on=['goods_id(商品ID)','订单时间'],how='left')
+
+
+# In[ ]:
+
+
+data['market_price(市场价格)'] = data.groupby(['goods_id(商品ID)'])['market_price(市场价格)'].fillna(method='ffill')
+data['goods_price(售价)'] = data.groupby(['goods_id(商品ID)'])['goods_price(售价)'].fillna(method='ffill')
+
+
+# In[ ]:
+
+
+data['goods_price/market'] = data['goods_price(售价)']/data['market_price(市场价格)']
+
+
+# ## 情感处理
+
+# In[ ]:
+
+
+from snownlp import SnowNLP
+
+
+# #计算每一条评论的情感值
+
+# In[ ]:
+
+
+B_comment['情感值'] = B_comment['content(评论内容)'].astype(str).map(lambda x:SnowNLP(x).sentiments)
+
+
+# 每一个商品每一天评论的均值，数量，和
+
+# In[193]:
+
+
+temp = B_comment.groupby(['add_time(评论时间时间戳)','goods_id(商品ID)'])['情感值'].agg([('情感值_mean','mean'),
+                                                                     ('评论数量','count'),
+                                                                            ('情感值_sum','sum')]).reset_index()
+
+
+# 商品评论历史均值
+
+# In[195]:
+
+
+temp['历史平均情感值'] = temp.groupby(['goods_id(商品ID)'])['情感值_sum'].cumsum()/temp.groupby(['goods_id(商品ID)'])['评论数量'].cumsum()
+
+
+# 和data拼接起来
+
+# In[197]:
+
+
+temp.columns = ['订单时间', 'goods_id(商品ID)', '情感值_mean', '评论数量', '情感值_sum','历史平均情感值']
+data = data.merge(temp,on=['goods_id(商品ID)','订单时间'],how='left')
+
+
+# 缺失填充
+
+# In[203]:
+
+
+data['情感值_mean'] = data['情感值_mean'].fillna(0.5)
+data['评论数量'] = data['评论数量'].fillna(0)
+data['情感值_sum'] = data['情感值_sum'].fillna(0.5)
+data['历史平均情感值'] = data.groupby(['goods_id(商品ID)'])['历史平均情感值'].fillna(method='ffill')
+
+
+# In[201]:
+
+
+data['历史评论数量'] = data.groupby(['goods_id(商品ID)'])[ '评论数量'].cumsum()
+
+
+# In[204]:
+
+
+data.info()
+
+
+# # lstm
+
+# In[2]:
+
+
+import tensorflow as tf
+from sklearn.preprocessing import MinMaxScaler
+import matplotlib.pyplot as plt
+from tensorflow.keras.models import *
+from tensorflow.keras.layers import *
+from tensorflow.keras.callbacks import EarlyStopping,ReduceLROnPlateau
+from sklearn.metrics import mean_squared_error
+from sklearn.metrics import mean_absolute_error
+from sklearn.metrics import mean_absolute_percentage_error
+
+
+# In[6]:
+
+
+for col in ['number(订购数量) 日销量','shipping_id(快递名称)_中通速递', 'shipping_id(快递名称)_国通快递',
+       'shipping_id(快递名称)_圆通速递', 'shipping_id(快递名称)_天天',
+       'shipping_id(快递名称)_汇通快递', 'shipping_id(快递名称)_申通快递',
+       'shipping_id(快递名称)_邮政包裹', 'shipping_id(快递名称)_韵达速递',
+       'shipping_id(快递名称)_顺丰速运', 'pay_name(支付方式)_微信支付', 'pay_name(支付方式)_支付宝',
+       'pay_name(支付方式)_网银支付', 'shipping_fee(邮费)', 'integral_money(积分抵扣金额)',
+       'bonus(优惠券金额)', 'from_ad(广告位ID)', 'discount(打折)', 'bonus_id(优惠券ID)',
+       'pay_time-add_time_mean', 'pay_time-add_time_sum',
+       'pay_time-add_time_var', 'shipping_tim-pay_time_mean',
+       'shipping_tim-pay_time_sum', 'shipping_tim-pay_time_var',
+       'goods_amount(订单总金额)_mean', 'goods_amount(订单总金额)_sum',
+       'goods_amount(订单总金额)_var', 'money_paid(实付金额)_mean',
+       'money_paid(实付金额)_sum', 'money_paid(实付金额)_var', 'market_price(市场价格)',
+       'goods_price(售价)', 'goods_price/market', '情感值_mean', '评论数量', '情感值_sum',
+       '历史平均情感值', '历史评论数量']:
+    data[col] =  (data[col]-data[col].min())/(data[col].max()-data[col].min())
+
+
+# In[52]:
+
+
+data = data.fillna(0)
+
+
+# 划分训练集测试集
+
+# In[53]:
+
+
+step = 10
+X = []
+y = []
+y_time = []
+for group in data.groupby(['goods_id(商品ID)']):
+    m,n = group[1].shape
+    if m>step+7:
+        for i in range(step,m-8):
+            X.append(group[1].iloc[i-step:i+1,[2]+list(range(4,n))].values)
+            y.append(group[1].iloc[i,3])
+            y_time.append(group[1].iloc[i,0])
+
+
+# In[54]:
+
+
+y_time = pd.Series(y_time)
+
+
+# In[55]:
+
+
+y_time = y_time.sort_values()
+
+
+# In[56]:
+
+
+X = np.array(X)
+y = np.array(y)
+
+
+# In[57]:
+
+
+X = X[pd.Series(y).notnull()]
+
+
+# In[58]:
+
+
+y_time = y_time[pd.Series(y).notnull()]
+
+
+# In[59]:
+
+
+y_time.index = range(len(y_time))
+
+
+# In[60]:
+
+
+y = y[pd.Series(y).notnull()]
+
+
+# In[61]:
+
+
+X_train = X[list(y_time[:-20000].index)]
+y_train = y[list(y_time[:-20000].index)]
+
+
+# In[62]:
+
+
+X_val = X[list(y_time[-20000:-10000].index)]
+y_val = y[list(y_time[-20000:-10000].index)]
+
+
+# In[63]:
+
+
+X_test = X[list(y_time[-10000:].index)]
+y_test = y[list(y_time[-10000:].index)]
+
+
+# In[64]:
+
+
+train_ds = tf.data.Dataset.from_tensor_slices((X_train.astype(np.float32),y_train.astype(np.float32)))
+val_ds = tf.data.Dataset.from_tensor_slices((X_val.astype(np.float32),y_val.astype(np.float32)))
+test_ds = tf.data.Dataset.from_tensor_slices((X_test.astype(np.float32),y_test.astype(np.float32)))
+train_ds = train_ds.shuffle(256).batch(256)
+val_ds = val_ds.shuffle(256).batch(256)
+
+
+# Bilstm模型
+
+# In[65]:
+
+
+model = Sequential()
+model.add(Bidirectional(LSTM(16,return_sequences=True)))
+model.add(Bidirectional(GRU(16,return_sequences=True)))
+model.add(Bidirectional(LSTM(16,return_sequences=True)))
+model.add(Bidirectional(GRU(16,return_sequences=True)))
+model.add(Bidirectional(LSTM(16,return_sequences=True)))
+model.add(Bidirectional(GRU(16,return_sequences=False)))
+
+model.add(Dense(2))
+model.compile(optimizer='adam',
+              loss='mae',
+              metrics='mae'
+             )
+early_stop = EarlyStopping(monitor='val_loss', patience=20) #设置早停得到最优结果
+#开始训练模型
+history = model.fit(train_ds,
+          epochs=500, 
+          validation_data=val_ds,
+          callbacks=[early_stop],
+          verbose=1
+          #validation_freq=1
+         )
+
+
+# In[66]:
+
+
+def MSE(y_true, y_pred):
+     return mean_squared_error(y_true, y_pred)
+def RMSE(y_true, y_pred):
+    return np.sqrt(mean_squared_error(y_true, y_pred))
+def MAE(y_true, y_pred):
+    return mean_absolute_error(y_true, y_pred)
+def score(y_true, y_pred):
+    return [MSE(y_true, y_pred),MAE(y_true, y_pred),RMSE(y_true, y_pred)]
+
+
+# In[67]:
+
+
+y_pred_lstm = model.predict(X_test)[:,0]
+pred_score = score(y_test, y_pred_lstm)
+
+
+# In[69]:
+
+
+print('MSE:{:.4f},MAE:{:.4f},RMSE:{:.4f}'.format(pred_score[0],pred_score[1],pred_score[2]))
+
+
+# In[ ]:
+
+
+
+
