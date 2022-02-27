@@ -59,7 +59,7 @@ df = B_order_goods.groupby(['goods_id(商品ID)','订单时间'])['number(订购
 df['订单时间'] = pd.to_datetime(df['订单时间'])
 
 
-# 缺失日期填充：商品1的订单记录在2020-06-01，2020-06-20，。。。，这样01到20之间没有记录，销量为0这个需要填充上
+# 缺失日期填充
 
 # In[10]:
 
@@ -96,7 +96,7 @@ data.head()
 
 # # 特征工程-B_order_info
 
-# province(省)	city(市)	district(区/县)这几个特征的类很多不能使用one-hot处理，神经网络也没办法处理label的，所以采取embedding的方式，这里使用的是gensim的doc2vec，它和word2vec类似
+# province(省)	city(市)	district(区/县)这几个特征采取embedding的方式
 
 # In[14]:
 
