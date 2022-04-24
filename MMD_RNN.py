@@ -1,18 +1,16 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
-
-
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+import json
+import requests
+from json import JSONDecoder
 import warnings
 warnings.filterwarnings("ignore")
 
-
-# In[6]:
 
 
 B_goods = pd.read_csv('B_goods.csv',encoding='utf-8')
@@ -22,8 +20,6 @@ B_comment = pd.read_csv('B_comment.csv',encoding='utf-8')
 
 
 # 处理时间，转为年-月-日 时：分：秒
-
-# In[7]:
 
 
 B_order_info = B_order_info.sort_values('add_time(下单时间)')
@@ -41,8 +37,6 @@ B_comment['add_time(评论时间时间戳)'] = pd.to_datetime(B_comment['add_tim
 
 # 从B_order_info中获取每一个订单的时间拼接到B_order_goods中
 
-# In[8]:
-
 
 temp = B_order_info[['order_id(订单id)','add_time(下单时间)']]
 temp.columns = ['order_id(订单号)','订单时间']
@@ -50,8 +44,6 @@ B_order_goods = B_order_goods.merge(temp,on='order_id(订单号)',how='left')
 
 
 # # 构造要预测目标数据
-
-# In[9]:
 
 
 #计算每一个商品的销量
@@ -61,7 +53,6 @@ df['订单时间'] = pd.to_datetime(df['订单时间'])
 
 # 缺失日期填充
 
-# In[10]:
 
 
 #缺失日期填充
@@ -76,19 +67,14 @@ for group in df.groupby(['goods_id(商品ID)']):
 
 # 这个这个商品这个时间节点未来7天的销量和
 
-# In[11]:
 
 
 data['number(订购数量) 未来7日销量'] = np.sum([data.groupby(['goods_id(商品ID)'])['number(订购数量) 日销量'].shift(-i) for i in range(1,8)],axis=0)
 
 
-# In[12]:
-
 
 data['订单时间'] = data['订单时间'].dt.date
 
-
-# In[13]:
 
 
 data.head()
@@ -98,13 +84,9 @@ data.head()
 
 # province(省)	city(市)	district(区/县)这几个特征采取embedding的方式
 
-# In[14]:
-
 
 import gensim
 
-
-# In[15]:
 
 
 area_col,vec_num = 'province(省)',2
@@ -113,7 +95,7 @@ temp = B_order_info[['order_id(订单id)',area_col]]
 temp.columns = ['order_id(订单号)',area_col]
 B_order_goods = B_order_goods.merge(temp,on='order_id(订单号)',how='left') #拼接到order_goods中
 #获取每一个商品每一天的省份
-goods_date_area = B_order_goods.groupby(['goods_id(商品ID)','订单时间'])[area_col].apply(lambda x: 
+goods_date_area = B_order_goods.groupby(['goods_id(商品ID)','订单时间'])[area_col].apply(lambda x:
                                                                          list(x.dropna().astype(int).astype(str))).reset_index()
 #doc2vec向量化
 corpus = []
@@ -132,8 +114,6 @@ print(goods_date_area.head())
 del goods_date_area[area_col]
 data = data.merge(goods_date_area,on=['goods_id(商品ID)','订单时间'],how='left')
 
-
-# In[ ]:
 
 
 area_col,vec_num = 'city(市)',3
@@ -142,7 +122,7 @@ temp = B_order_info[['order_id(订单id)',area_col]]
 temp.columns = ['order_id(订单号)',area_col]
 B_order_goods = B_order_goods.merge(temp,on='order_id(订单号)',how='left') #拼接到order_goods中
 #获取每一个商品每一天的省份
-goods_date_area = B_order_goods.groupby(['goods_id(商品ID)','订单时间'])[area_col].apply(lambda x: 
+goods_date_area = B_order_goods.groupby(['goods_id(商品ID)','订单时间'])[area_col].apply(lambda x:
                                                                          list(x.dropna().astype(int).astype(str))).reset_index()
 #doc2vec向量化
 corpus = []
@@ -162,8 +142,6 @@ del goods_date_area[area_col]
 data = data.merge(goods_date_area,on=['goods_id(商品ID)','订单时间'],how='left')
 
 
-# In[ ]:
-
 
 area_col,vec_num = 'district(区/县)',4
 #获取order_info中每一个订单的省份
@@ -171,7 +149,7 @@ temp = B_order_info[['order_id(订单id)',area_col]]
 temp.columns = ['order_id(订单号)',area_col]
 B_order_goods = B_order_goods.merge(temp,on='order_id(订单号)',how='left') #拼接到order_goods中
 #获取每一个商品每一天的省份
-goods_date_area = B_order_goods.groupby(['goods_id(商品ID)','订单时间'])[area_col].apply(lambda x: 
+goods_date_area = B_order_goods.groupby(['goods_id(商品ID)','订单时间'])[area_col].apply(lambda x:
                                                                          list(x.dropna().astype(int).astype(str))).reset_index()
 #doc2vec向量化
 corpus = []
@@ -193,8 +171,6 @@ data = data.merge(goods_date_area,on=['goods_id(商品ID)','订单时间'],how='
 
 # 没有销量的日期填充为0
 
-# In[ ]:
-
 
 for col in ['province(省)_0', 'province(省)_1', 'district(区/县)_0', 'district(区/县)_1',
        'district(区/县)_2', 'district(区/县)_3', 'city(市)_0', 'city(市)_1','city(市)_2']:
@@ -205,7 +181,6 @@ for col in ['province(省)_0', 'province(省)_1', 'district(区/县)_0', 'distri
 
 # 先对快递特征进行替换，属于同一个快递的合并
 
-# In[ ]:
 
 
 shipping_replace = {'中通速递[全场默认此快递]':'中通速递',
@@ -222,23 +197,17 @@ def get_shipping_replace(x):
         return x
 
 
-# In[ ]:
-
 
 B_order_info['shipping_id(快递名称)'] = B_order_info['shipping_id(快递名称)'].map(lambda x:get_shipping_replace(x))
 
 
 # 这里计算的是每一天每一种快递的数量
 
-# In[ ]:
-
 
 temp = B_order_info[['order_id(订单id)','shipping_id(快递名称)']]
 temp.columns = ['order_id(订单号)','shipping_id(快递名称)']
 B_order_goods = B_order_goods.merge(temp,on='order_id(订单号)',how='left') #拼接到order_goods中
 
-
-# In[ ]:
 
 
 temp = B_order_goods[['goods_id(商品ID)','订单时间','shipping_id(快递名称)']]
@@ -247,15 +216,12 @@ temp = temp.groupby(['goods_id(商品ID)','订单时间']).sum().reset_index()
 temp.head()
 
 
-# In[ ]:
-
 
 data = data.merge(temp,on=['goods_id(商品ID)','订单时间'],how='left')
 
 
 # 缺失的填充为0
 
-# In[ ]:
 
 
 for col in ['shipping_id(快递名称)_中通速递', 'shipping_id(快递名称)_国通快递', 'shipping_id(快递名称)_圆通速递',
@@ -268,8 +234,6 @@ for col in ['shipping_id(快递名称)_中通速递', 'shipping_id(快递名称)
 
 # 支付方式合并为三种
 
-# In[ ]:
-
 
 def get_pay_name(x):
     if '网银' in x:
@@ -280,15 +244,11 @@ def get_pay_name(x):
         return '支付宝'
 
 
-# In[ ]:
-
 
 B_order_info['pay_name(支付方式)'] = B_order_info['pay_name(支付方式)'].astype(str).map(lambda x:get_pay_name(x))
 
 
 # 计算每一天每一种支付方式的数量
-
-# In[ ]:
 
 
 temp = B_order_info[['order_id(订单id)','pay_name(支付方式)']]
@@ -300,13 +260,9 @@ temp = temp.groupby(['goods_id(商品ID)','订单时间']).sum().reset_index()
 temp.head()
 
 
-# In[ ]:
-
 
 data = data.merge(temp,on=['goods_id(商品ID)','订单时间'],how='left')
 
-
-# In[ ]:
 
 
 for col in ['pay_name(支付方式)_微信支付', 'pay_name(支付方式)_支付宝','pay_name(支付方式)_网银支付']:
@@ -316,8 +272,6 @@ for col in ['pay_name(支付方式)_微信支付', 'pay_name(支付方式)_支�
 # ### 是否类特征
 
 # 每一天每一种是否类的数量
-
-# In[ ]:
 
 
 for col in ['shipping_fee(邮费)','integral_money(积分抵扣金额)','bonus(优惠券金额)','from_ad(广告位ID)',
@@ -335,8 +289,6 @@ for col in ['shipping_fee(邮费)','integral_money(积分抵扣金额)','bonus(�
 # ### 计算分布的特征
 
 # 计算每一天分布的均值，和，方差作为特征
-
-# In[ ]:
 
 
 for col in ['pay_time-add_time', 'shipping_tim-pay_time','goods_amount(订单总金额)','money_paid(实付金额)']:
@@ -356,14 +308,11 @@ for col in ['pay_time-add_time', 'shipping_tim-pay_time','goods_amount(订单总
 
 # 'market_price(市场价格)','goods_price(售价)'
 
-# In[ ]:
 
 
 data = data.merge(B_order_goods[['goods_id(商品ID)','订单时间','market_price(市场价格)','goods_price(售价)']],
                   on=['goods_id(商品ID)','订单时间'],how='left')
 
-
-# In[ ]:
 
 
 data['market_price(市场价格)'] = data.groupby(['goods_id(商品ID)'])['market_price(市场价格)'].fillna(method='ffill')
@@ -376,9 +325,8 @@ data['goods_price(售价)'] = data.groupby(['goods_id(商品ID)'])['goods_price(
 data['goods_price/market'] = data['goods_price(售价)']/data['market_price(市场价格)']
 
 
-# ## 情感处理
+# ## 情感计算 [文本模态]
 
-# In[ ]:
 
 
 from snownlp import SnowNLP
@@ -386,15 +334,12 @@ from snownlp import SnowNLP
 
 # #计算每一条评论的情感值
 
-# In[ ]:
-
 
 B_comment['情感值'] = B_comment['content(评论内容)'].astype(str).map(lambda x:SnowNLP(x).sentiments)
 
 
 # 每一个商品每一天评论的均值，数量，和
 
-# In[193]:
 
 
 temp = B_comment.groupby(['add_time(评论时间时间戳)','goods_id(商品ID)'])['情感值'].agg([('情感值_mean','mean'),
@@ -404,15 +349,12 @@ temp = B_comment.groupby(['add_time(评论时间时间戳)','goods_id(商品ID)'
 
 # 商品评论历史均值
 
-# In[195]:
-
 
 temp['历史平均情感值'] = temp.groupby(['goods_id(商品ID)'])['情感值_sum'].cumsum()/temp.groupby(['goods_id(商品ID)'])['评论数量'].cumsum()
 
 
 # 和data拼接起来
 
-# In[197]:
 
 
 temp.columns = ['订单时间', 'goods_id(商品ID)', '情感值_mean', '评论数量', '情感值_sum','历史平均情感值']
@@ -421,7 +363,6 @@ data = data.merge(temp,on=['goods_id(商品ID)','订单时间'],how='left')
 
 # 缺失填充
 
-# In[203]:
 
 
 data['情感值_mean'] = data['情感值_mean'].fillna(0.5)
@@ -430,22 +371,61 @@ data['情感值_sum'] = data['情感值_sum'].fillna(0.5)
 data['历史平均情感值'] = data.groupby(['goods_id(商品ID)'])['历史平均情感值'].fillna(method='ffill')
 
 
-# In[201]:
 
 
 data['历史评论数量'] = data.groupby(['goods_id(商品ID)'])[ '评论数量'].cumsum()
 
 
-# In[204]:
+
+#颜值计算 (图像模态)
+
+def facecalculation(filepath):
+    request_url = "https://api-cn.faceplusplus.com/facepp/v1/skinanalyze"
+    key = "************************"  #API Key
+    secret = "************************"  #API 密钥
+
+    data = {"api_key": key, "api_secret": secret, "outer_id": 'zbpm'}
+    files = {"image_file": open(filepath, "rb")}
+    response = requests.post(request_url, data=data, files=files)
+    req_con = response.content.decode('utf-8')
+    req_dict = JSONDecoder().decode(req_con)
+    result1 = req_dict["result"]["eye_pouch"]["value"]
+    result2 = req_dict["result"]["dark_circle"]["value"]
+    result3 = req_dict["result"]["forehead_wrinkle"]["value"]
+    result4 = req_dict["result"]["crows_feet"]["value"]
+    result5 = req_dict["result"]["eye_finelines"]["value"]
+    result6 = req_dict["result"]["glabella_wrinkle"]["value"]
+    result7 = req_dict["result"]["nasolabial_fold"]["value"]
+    result8 = req_dict["result"]["skin_type"]["details"]["1"]["value"]
+    result9 = req_dict["result"]["pores_forehead"]["value"]
+    result10 = req_dict["result"]["pores_left_cheek"]["value"]
+    result11 = req_dict["result"]["pores_right_cheek"]["value"]
+    result12 = req_dict["result"]["pores_jaw"]["value"]
+    result13 = req_dict["result"]["blackhead"]["value"]
+    result14 = req_dict["result"]["acne"]["value"]
+    result15 = req_dict["result"]["dark_circle"]["value"]
+    result16 = req_dict["result"]["right_eyelids"]["value"]
+    result17 = req_dict["result"]["skin_spot"]["value"]
+
+    total_score = result1 + result2 + result3 + result4 + result5 + result6 + result7 + result8 + result9 + result10 + result11 + result12 + result13 + result14 + result15 + result16 + result17
+    face_value = total_score / 17
+
+    return face_value
+
+
+B_user = pd.read_csv('B_users.csv',encoding='utf-8')
+B_user['颜值'] = B_user['avatar(用户头像)'].astype(str).map(lambda x:facecalculation(x))
+
+temp.columns = ['订单时间', 'user_id(用户id)', '颜值']
+data = data.merge(temp,on=['user_id(用户id)','订单时间'],how='left')
+# 缺失填充
+data['颜值'] = data['颜值'].fillna(0)
 
 
 data.info()
 
 
-# # lstm
-
-# In[2]:
-
+# # 构建级联混合循环神经网络预测模型
 
 import tensorflow as tf
 from sklearn.preprocessing import MinMaxScaler
@@ -457,8 +437,6 @@ from sklearn.metrics import mean_squared_error
 from sklearn.metrics import mean_absolute_error
 from sklearn.metrics import mean_absolute_percentage_error
 
-
-# In[6]:
 
 
 for col in ['number(订购数量) 日销量','shipping_id(快递名称)_中通速递', 'shipping_id(快递名称)_国通快递',
@@ -479,7 +457,6 @@ for col in ['number(订购数量) 日销量','shipping_id(快递名称)_中通�
     data[col] =  (data[col]-data[col].min())/(data[col].max()-data[col].min())
 
 
-# In[52]:
 
 
 data = data.fillna(0)
@@ -487,7 +464,6 @@ data = data.fillna(0)
 
 # 划分训练集测试集
 
-# In[53]:
 
 
 step = 10
@@ -503,71 +479,39 @@ for group in data.groupby(['goods_id(商品ID)']):
             y_time.append(group[1].iloc[i,0])
 
 
-# In[54]:
-
 
 y_time = pd.Series(y_time)
 
 
-# In[55]:
-
-
 y_time = y_time.sort_values()
-
-
-# In[56]:
 
 
 X = np.array(X)
 y = np.array(y)
 
 
-# In[57]:
-
-
 X = X[pd.Series(y).notnull()]
-
-
-# In[58]:
 
 
 y_time = y_time[pd.Series(y).notnull()]
 
 
-# In[59]:
-
-
 y_time.index = range(len(y_time))
 
 
-# In[60]:
-
-
 y = y[pd.Series(y).notnull()]
-
-
-# In[61]:
 
 
 X_train = X[list(y_time[:-20000].index)]
 y_train = y[list(y_time[:-20000].index)]
 
 
-# In[62]:
-
-
 X_val = X[list(y_time[-20000:-10000].index)]
 y_val = y[list(y_time[-20000:-10000].index)]
 
 
-# In[63]:
-
-
 X_test = X[list(y_time[-10000:].index)]
 y_test = y[list(y_time[-10000:].index)]
-
-
-# In[64]:
 
 
 train_ds = tf.data.Dataset.from_tensor_slices((X_train.astype(np.float32),y_train.astype(np.float32)))
@@ -577,9 +521,7 @@ train_ds = train_ds.shuffle(256).batch(256)
 val_ds = val_ds.shuffle(256).batch(256)
 
 
-# Bilstm模型
-
-# In[65]:
+# 模型
 
 
 model = Sequential()
@@ -598,15 +540,13 @@ model.compile(optimizer='adam',
 early_stop = EarlyStopping(monitor='val_loss', patience=20) #设置早停得到最优结果
 #开始训练模型
 history = model.fit(train_ds,
-          epochs=500, 
+          epochs=500,
           validation_data=val_ds,
           callbacks=[early_stop],
           verbose=1
           #validation_freq=1
          )
 
-
-# In[66]:
 
 
 def MSE(y_true, y_pred):
@@ -619,21 +559,10 @@ def score(y_true, y_pred):
     return [MSE(y_true, y_pred),MAE(y_true, y_pred),RMSE(y_true, y_pred)]
 
 
-# In[67]:
-
 
 y_pred_lstm = model.predict(X_test)[:,0]
 pred_score = score(y_test, y_pred_lstm)
 
 
-# In[69]:
-
 
 print('MSE:{:.4f},MAE:{:.4f},RMSE:{:.4f}'.format(pred_score[0],pred_score[1],pred_score[2]))
-
-
-# In[ ]:
-
-
-
-
